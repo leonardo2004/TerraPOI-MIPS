@@ -1,0 +1,145 @@
+# math.mar
+# Sub-rotinas para cálculos em ponto flutuante (Slope e Aspect).
+
+.data
+    # Constantes locais para arctan_approx
+    ARCTAN_LIMIT:   .float  1.5         # Limite da série de Taylor :(
+    ARCTAN_PI_2:    .float  1.5707963   # pi/2
+    ARCTAN_NEG_PI_2:.float  -1.5707963  # -pi/2
+    CONST_ZERO_F:   .float  0.0         # Zero para comparação com FP
+
+.text
+.globl arctan_approx
+.globl calc_atan2
+
+# Entrada: $f12 = x
+# Saída: $f0 = atan(x)
+arctan_approx:
+    mov.s $f0, $f12             # $f0 = x
+    
+    # PROTEÇÃO: Verifica se |x| > 1.5 (limite da série de Taylor)
+    l.s   $f1, ARCTAN_LIMIT
+    abs.s $f2, $f12
+    c.le.s $f2, $f1
+    bc1t  arctan_series
+    
+    # Se |x| > 1.5, retorna saturated value ±π/2
+    l.s   $f0, ARCTAN_PI_2       
+    l.s   $f3, CONST_ZERO_F
+    c.lt.s $f12, $f3             # Se x < 0
+    bc1f  arctan_done
+    # Se x < 0, retorna -π/2
+    l.s   $f0, ARCTAN_NEG_PI_2
+    j     arctan_done
+    
+arctan_series:
+    # Série de Taylor para |x| <= 1.5
+    mul.s $f4, $f12, $f12       # x^2
+    mul.s $f5, $f4, $f12        # x^3
+    li    $t8, 3
+    mtc1  $t8, $f8
+    cvt.s.w $f8, $f8
+    div.s $f5, $f5, $f8         # x^3/3
+    sub.s $f0, $f12, $f5        # $f0 = x - x^3/3
+    
+arctan_done:
+    jr    $ra
+
+# Entrada: $f16 = Delta Zy (Y), $f17 = Delta Zx (X)
+# Saída: $f12 = Aspect em Graus [0, 360)
+calc_atan2:
+    addi  $sp, $sp, -4
+    sw    $ra, 0($sp)
+
+    # Carrega EPSILON para proteção contra divisão por quase-zero
+    l.s   $f20, CONST_EPSILON
+    
+    # Verifica valor absoluto de Delta Zx para proteção robusta
+    # Se |Zx| < EPSILON, trata como zero para evitar Inf
+    abs.s $f19, $f17
+    c.lt.s $f19, $f20
+    bc1t  at2_x_zero
+
+    # Checa se Delta Zx (X) é exatamente zero
+    l.s   $f20, CONST_0
+    c.eq.s $f17, $f20 
+    bc1t  at2_x_zero
+
+    # Caso 1: Zx != 0 e |Zx| >= EPSILON (usa atan)
+    div.s $f12, $f16, $f17      # $f12 = y/x (tangente)
+    jal   arctan_approx         # $f0 = atan(y/x) em radianos
+
+    # Conversão de Radianos para Graus
+    l.s   $f20, CONST_180
+    l.s   $f21, CONST_PI
+    mul.s $f0, $f0, $f20
+    div.s $f12, $f0, $f21       # $f12 = Aspect em Graus
+
+    # Correção de Quadrante
+    c.lt.s $f17, $f20           # Zx < 0
+    bc1t  at2_quadrant_23
+
+    # Caso Zx > 0 (Quadrante 1 e 4)
+    c.lt.s $f16, $f20           # Zy < 0
+    bc1t  at2_quadrant_4
+
+    # Quadrante 1 (Zx>0, Zy>=0): [0, 90]
+    j     at2_normalize
+
+at2_quadrant_23:
+    # Quadrante 2 e 3 (Zx < 0)
+    add.s $f12, $f12, $f20      # Aspect = Aspect + 180
+    j     at2_normalize
+
+at2_quadrant_4:
+    # Quadrante 4 (Zx>0, Zy<0)
+    l.s   $f20, CONST_360
+    add.s $f12, $f12, $f20      # Aspect = Aspect + 360
+    j     at2_normalize
+
+at2_x_zero:
+    # Caso 2: Zx = 0
+    c.lt.s $f16, $f20           # Zy < 0
+    bc1t  at2_neg_y
+
+    c.eq.s $f16, $f20           # Zy = 0 (NaN)
+    bc1t  at2_undef
+
+    # Zy > 0 (Norte)
+    l.s   $f12, CONST_0         # Aspect = 0
+    j     at2_normalize
+
+at2_neg_y:
+    # Zy < 0 (Sul)
+    l.s   $f12, CONST_180       # Aspect = 180
+    j     at2_normalize
+
+at2_undef:
+    # Zy=0 e Zx=0. Caso especial: pixel absolutamente plano
+    # (Delta Zx = 0 e Delta Zy = 0). tratar explicitamente definindo Aspect = 0 para evitar NaN/Inf.
+    l.s   $f12, CONST_0
+
+at2_normalize:
+    # Normaliza [0, 360) com proteção contra valores muito grandes
+    l.s   $f20, CONST_360
+    l.s   $f21, CONST_0
+    
+    # Loop: reduz Aspect para [0, 360) usando subtração/adição repetida
+    # Primeiro: se Aspect < 0, adiciona 360 até ficar em [0, 360)
+normalize_neg_loop:
+    c.lt.s $f12, $f21           # Se Aspect < 0
+    bc1f  normalize_pos_loop    # Se não negativo, tenta positivo
+    add.s $f12, $f12, $f20      # Aspect += 360
+    j     normalize_neg_loop    # Repete até Aspect >= 0
+
+normalize_pos_loop:
+    # Agora: se Aspect >= 360, subtrai 360 até ficar em [0, 360)
+    c.lt.s $f12, $f20           # Se Aspect < 360
+    bc1t  at2_ret               # Pronto, retorna
+    sub.s $f12, $f12, $f20      # Aspect -= 360
+    j     normalize_pos_loop    # Repete
+
+at2_ret:
+    lw    $ra, 0($sp)
+    addi  $sp, $sp, 4
+    jr    $ra

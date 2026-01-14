@@ -1,0 +1,379 @@
+.include "parser.mar"
+.include "math.mar"
+.include "poi_output.mar"
+.include "spatial_filter.mar"
+
+#AVISO: OS COMENTÁRIOS CORROMPERAM POR CAUSA DO DISCORD, NÃO ENTENDEMOS O PORQUE
+#SÓ ACEITAMOS PQ CADA VEZ QUE TIVÉSSEMOS QUE TRANSFERIR O ARQUIVO IA CORROMPER DE NOVO
+
+
+.data
+    # Configs de I/O
+    filename:       .asciiz "mde.txt"      
+    output_filename:.asciiz "poi_output.txt" 
+    buffer:         .space  300000         
+    
+    # Matrizes
+    .align 2  
+    MDE_Matriz:     .space  65536          
+    .align 2  
+    POI_Matriz:     .space  16384
+        .align 2
+        Score_Matriz:   .space  65536
+    OUTPUT_BUFFER_SIZE: .word 32896
+    output_buffer:  .space  32896         
+
+    # Constantes de Parâmetros Geográficos
+    DIMENSAO:       .word   128 # Dimensão da matriz (N x N)
+    PIXEL_SIZE:     .float  30.0
+    PIXEL_2X:       .float  60.0
+    
+    ELEVACAO_OCEANO:.float  0.5 # Limiar de elevação para filtrar oceano (abaixo disso é considerado água)
+    LIMIAR_SLOPE_ALTO:  .float  3.0 # Limiar 1 de inclinação (mais plano)
+    LIMIAR_SLOPE_MEDIO: .float  8.0 # Limiar 2 de inclinação (moderado)
+    LIMIAR_SLOPE_SERRA: .float  15.0 # Limiar máximo de inclinação (acima disso é rejeitado)
+    
+    # CONFIGURAÇÃO DE HEMISFÉRIO
+    # 0 = Norte, 1 = Sul, 2 = Equador
+    HEMISPHERE:     .word   1 # Configuração inicial (Hemisfério Sul)
+    
+    # Orientações favoráveis por hemisfério (em graus)
+    # Norte: NW/Noroeste (270-45)
+    ASPECT_NORTH_MIN:   .float  270.0
+    ASPECT_NORTH_MAX:   .float  45.0
+    
+    # Sul: SW/Sudoeste (135-315)
+    ASPECT_SOUTH_MIN:   .float  135.0
+    ASPECT_SOUTH_MAX:   .float  315.0
+    
+    # Equador: Qualquer orientação é aceitável
+    ASPECT_EQUATOR_MIN:   .float  0.0
+    ASPECT_EQUATOR_MAX:   .float  360.0
+    
+    SCORE_MINIMO:       .word   3 # Limiar de pontuação (só marca POI se score > este valor)
+    MIN_NEIGHBOR_COUNT: .word   4           
+    
+    # Constantes Matemáticas
+    CONST_180:      .float  180.0
+    CONST_PI:       .float  3.14159265
+    CONST_360:      .float  360.0
+    CONST_0:        .float  0.0
+    CONST_4:        .float  4.0             
+    CONST_EPSILON:  .float  0.000001 # Tolerância para evitar divisão por zero/quase zero
+    CONST_10:       .float  10.0 # Limite superior para arctan clamping
+    CONST_NEG_10:   .float  -10.0 # Limite inferior para arctan clamping
+    CONST_1_5:      .float  1.5 # Limite para aproximação de arctan
+    
+    # Diagnóstico e Contadores
+    diag_slope:     .float  0.0
+    diag_aspect:    .float  0.0
+    poi_count:      .word   0
+    
+    # Mensagens de I/O
+    msg_poi:        .asciiz "POI -> L:"
+    msg_col:        .asciiz " C:"
+    msg_pts:        .asciiz " Pts:"
+    msg_end:        .asciiz "\n"
+    msg_ok:         .asciiz "Processando MDE...\n"
+    msg_ask_hemisphere: .asciiz "Escolha hemisferio (0=Norte,1=Sul,2=Equador): "
+    msg_hemi_ok:    .asciiz "Hemisferio registrado.\n"
+    msg_err:        .asciiz "Erro leitura arquivo.\n"
+    msg_file_ok:    .asciiz "\nMatriz binaria salva em poi_output.txt\n" 
+    msg_file_err:   .asciiz "\nERRO: Falha ao abrir/escrever arquivo de saida.\n" 
+    msg_poi_count:  .asciiz "\nTotal de POIs (Pre-Filtro Espacial): " 
+        msg_prob:       .asciiz " Probabilidade: "
+        msg_percent:    .asciiz " %\n"
+
+.text
+.globl main
+
+main:
+    li   $sp, 0x7ffffffc 
+
+    # 1. Carregamento de Arquivo
+    li   $v0, 13
+    la   $a0, filename
+    li   $a1, 0
+    syscall
+    move $s6, $v0       
+    blt  $s6, 0, erro_file
+
+    li   $v0, 14
+    move $a0, $s6       
+    la   $a1, buffer    
+    li   $a2, 299999    
+    syscall
+    li   $v0, 16        
+    move $a0, $s6
+    syscall
+
+    la   $a0, msg_ok
+    li   $v0, 4
+    syscall
+
+    # Configuração do Hemisfério (Interação com o Usuário)
+    la   $a0, msg_ask_hemisphere
+    li   $v0, 4
+    syscall
+
+    # Lê o hemisfério (0, 1 ou 2)
+    li   $v0, 5
+    syscall
+    move $t0, $v0
+
+    # Validação do valor lido (se < 0 ou > 2)
+    li   $t1, 0
+    blt  $t0, $t1, set_hemi_default
+    li   $t2, 2
+    bgt  $t0, $t2, set_hemi_default
+
+    # Armazena valor válido
+    la   $t3, HEMISPHERE
+    sw   $t0, 0($t3)
+    j    hemi_after_store
+
+set_hemi_default:
+    li   $t0, 1 # Define default = 1 (Sul)
+    la   $t3, HEMISPHERE
+    sw   $t0, 0($t3)
+
+hemi_after_store:
+    la   $a0, msg_hemi_ok
+    li   $v0, 4
+    syscall
+
+    # 2. Inicializa matrizes e faz o parsing
+    jal  init_poi_matrix
+    jal  parse_mde
+
+    # 3. Loop principal de Análise (Percorre i e j de 1 a N-2)
+    li   $s0, 1
+    lw   $s2, DIMENSAO
+    addi $s3, $s2, -1
+
+loop_i:
+    bge  $s0, $s3, end_analysis
+    li   $s1, 1 # j (coluna)
+
+loop_j:
+    bge  $s1, $s3, next_i
+    mul  $t0, $s0, $s2      
+    add  $t0, $t0, $s1      
+    sll  $t0, $t0, 2        
+    la   $t9, MDE_Matriz    
+    add  $t8, $t9, $t0      
+    l.s  $f0, 0($t8)
+
+    # FILTRO DE OCEANO: Rejeita pixels com elevação próxima de zero
+    l.s   $f20, ELEVACAO_OCEANO
+    c.le.s $f0, $f20
+    bc1t  ocean_zero
+    
+    # Carrega elevações dos vizinhos Norte, Sul, Leste e Oeste
+    
+    l.s  $f1, 4($t8)
+    l.s  $f2, -4($t8)
+    l.s  $f3, 512($t8)
+    l.s  $f4, -512($t8)
+
+    # CÁLCULO SLOPE e ASPECT (Declividade e Orientação)
+    
+    sub.s $f5, $f1, $f2
+    sub.s $f6, $f4, $f3
+    
+    # Magnitude do Gradiente
+    mul.s $f7, $f5, $f5 
+    mul.s $f9, $f6, $f6
+    add.s $f7, $f7, $f9
+    sqrt.s $f7, $f7 
+    
+    # CORREÇÃO: Tratar Pixels Planos
+    l.s   $f20, CONST_EPSILON  
+    c.le.s $f7, $f20
+    bc1t  flat_pixel_fix
+    
+    # CÁLCULO PARA PIXEL COM INCLINAÇÃO
+    l.s   $f10, PIXEL_2X    
+    div.s $f12, $f7, $f10
+    
+    l.s   $f20, CONST_10
+    abs.s $f18, $f12
+    c.le.s $f18, $f20
+    bc1t  slope_ok
+    l.s   $f21, CONST_0
+    c.lt.s $f12, $f21
+    bc1t  slope_clamp_neg
+    mov.s $f12, $f20
+    j     slope_ok
+slope_clamp_neg:
+    l.s   $f12, CONST_NEG_10
+slope_ok:
+    jal   arctan_approx
+    mov.s $f11, $f0
+    
+    # Conversão de Radianos para Graus
+    l.s   $f20, CONST_180
+    l.s   $f21, CONST_PI
+    mul.s $f11, $f11, $f20  
+    div.s $f11, $f11, $f21
+
+    # Cálculo do Aspect (Orientação) usando atan2
+    mov.s $f16, $f6
+    mov.s $f17, $f5
+    jal   calc_atan2
+    
+    j     start_scoring
+    
+flat_pixel_fix:
+    # Terreno Plano: Slope = 0.0, Aspect = 0.0
+    l.s   $f20, CONST_0
+    mov.s $f11, $f20
+    mov.s $f12, $f20
+    
+start_scoring:
+    
+    # [SISTEMA DE PONTUAÇÃO (Critérios de Habitabilidade)]
+    li    $t5, 0            
+    
+    # 1. Filtro de Inclinação Excessiva
+    l.s   $f20, LIMIAR_SLOPE_SERRA
+    c.le.s $f11, $f20               
+    bc1f  skip_poi # Se Slope > 15, não é habitável! D:
+    
+    # 2. Pontuação por Slope (Quanto mais plano, melhor)
+    l.s   $f20, LIMIAR_SLOPE_ALTO  
+    c.lt.s $f11, $f20               
+    bc1t  pts_slope_1
+    l.s   $f20, LIMIAR_SLOPE_MEDIO 
+    c.lt.s $f11, $f20               
+    bc1t  pts_slope_2
+    addi  $t5, $t5, 1
+    j     check_aspect
+pts_slope_1: 
+    addi  $t5, $t5, 4
+    j     check_aspect
+    
+pts_slope_2: 
+    addi  $t5, $t5, 2
+check_aspect:
+    # 3. Pontuação por Aspect
+    lw    $t7, HEMISPHERE
+    
+    beq   $t7, 0, aspect_norte
+    beq   $t7, 1, aspect_sul
+    j     aspect_equador
+
+aspect_norte:
+    # Norte: NW/Noroeste (270-45 graus) - Verifica se Aspect >= 270 OU Aspect < 45
+    l.s   $f20, ASPECT_NORTH_MIN
+    l.s   $f21, ASPECT_NORTH_MAX
+
+    c.lt.s $f12, $f20 # Se Aspect < 270
+    bc1f  check_north_upper # Se Aspect >= 270, é favorável
+    
+    # Aspect < 270, checa se é menor que 45
+    c.lt.s $f12, $f21
+    bc1t  pts_aspect_ok
+    j     skip_aspect_bonus
+check_north_upper:
+    # Aspect >= 270, é favorável
+    j     pts_aspect_ok
+
+aspect_sul:
+    l.s   $f20, ASPECT_SOUTH_MIN
+    l.s   $f21, ASPECT_SOUTH_MAX
+    c.lt.s $f12, $f20
+    bc1t  skip_aspect_bonus
+    c.le.s $f12, $f21
+    bc1t  pts_aspect_ok
+    j     skip_aspect_bonus
+
+aspect_equador:
+    # Equador: Sempre favorável
+    j     pts_aspect_ok
+
+pts_aspect_ok:
+    addi  $t5, $t5, 1
+skip_aspect_bonus:
+    j     skip_poi
+skip_poi:
+    # Salva o score calculado antes de verificar o limiar de POI
+    jal   save_score_matrix
+
+final_check:
+    lw    $t6, SCORE_MINIMO
+    ble   $t5, $t6, loop_cont  # Se Score <= Limiar (3), não é POI
+    
+    # Salva diagnóstico (Slope/Aspect)
+    la    $t7, diag_slope
+    s.s   $f11, 0($t7)
+    la    $t7, diag_aspect
+    s.s   $f12, 0($t7)
+    
+    # Incrementa o contador
+    lw    $t7, poi_count
+    addi  $t7, $t7, 1
+    sw    $t7, poi_count
+    
+    jal   save_score_matrix
+    jal   print_poi         
+    jal   save_poi_matrix   
+
+ocean_zero:
+    # Zera o score na matriz para pixels de oceano (e não marcar como POI)
+    mul   $t0, $s0, $s2 
+    add   $t0, $t0, $s1
+    sll   $t0, $t0, 2
+    la    $t9, Score_Matriz
+    add   $t4, $t9, $t0
+    sw    $zero, 0($t4)
+    j     loop_cont
+
+loop_cont:
+    addi $s1, $s1, 1
+    j    loop_j
+next_i:
+    addi $s0, $s0, 1
+    j    loop_i
+
+
+end_analysis:
+    # 3. Contagem final de POIs (Pré-Filtro Espacial)
+    la   $a0, msg_poi_count
+    li   $v0, 4
+    syscall
+    lw   $a0, poi_count
+    li   $v0, 1
+    syscall
+    la   $a0, msg_end
+    li   $v0, 4
+    syscall
+    
+    # 4. FILTRO ESPACIAL: Remove POIs isolados (Regiões pequenas)
+    jal  remove_small_regions
+    
+    # 5. Saída de Arquivo
+    jal  convert_matrix_to_buffer 
+    jal  save_matrix_to_file
+    
+    la   $a0, msg_file_ok
+    li   $v0, 4
+    syscall
+
+fim_main:
+    li   $v0, 10
+    syscall
+
+erro_file:
+    la   $a0, msg_err
+    li   $v0, 4
+    syscall
+    li   $v0, 10
+    syscall
+
+erro_output_file:
+    la   $a0, msg_file_err
+    li   $v0, 4
+    syscall
+    li   $v0, 10
+    syscall

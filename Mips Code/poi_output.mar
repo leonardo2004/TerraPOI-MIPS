@@ -1,0 +1,206 @@
+# poi_output.mar
+# Rotinas para output no console e escrita no arquivo poi_output.txt.
+
+.data
+    # Endereços das variáveis de diagnóstico em main.asm (para acesso)
+    .globl diag_slope
+    .globl diag_aspect
+    
+    # Mensagens de diagnóstico
+    msg_diag_slope: .asciiz " | S:"
+    msg_diag_aspect:.asciiz " A:"
+
+.text
+.globl print_poi
+.globl save_poi_matrix
+.globl save_score_matrix
+.globl convert_matrix_to_buffer
+.globl save_matrix_to_file
+
+# print_poi: Imprime a coordenada (i, j), a pontuação ($t5) E OS DIAGNÓSTICOS.
+# Usa $s0 (i), $s1 (j), $t5 (score).
+print_poi:
+    addi $sp, $sp, -4
+    sw   $ra, 0($sp)
+    
+    # 1. IMPRIME COORDENADAS E PONTUAÇÃO (Valores existentes)
+    la   $a0, msg_poi       
+    li   $v0, 4
+    syscall
+    
+    move $a0, $s0           # Imprime Linha (i)
+    li   $v0, 1
+    syscall
+    
+    la   $a0, msg_col       
+    li   $v0, 4
+    syscall
+    
+    move $a0, $s1           # Imprime Coluna (j)
+    li   $v0, 1
+    syscall
+    
+    la   $a0, msg_pts       
+    li   $v0, 4
+    syscall
+    
+    move $a0, $t5           # Imprime Pontuação
+    li   $v0, 1
+    syscall
+    
+    # 2. IMPRIME DIAGNÓSTICOS (Novos valores: Slope, Aspect)
+    
+    # Imprime Slope
+    la   $a0, msg_diag_slope
+    li   $v0, 4
+    syscall
+    la   $t0, diag_slope    # Carrega endereço do Slope
+    l.s  $f12, 0($t0)       # Carrega Slope para $f12 (Arg)
+    li   $v0, 2             # Syscall para print_float
+    syscall
+    
+    # Imprime Aspect
+    la   $a0, msg_diag_aspect
+    li   $v0, 4
+    syscall
+    la   $t0, diag_aspect   # Carrega endereço do Aspect
+    l.s  $f12, 0($t0)       # Carrega Aspect para $f12 (Arg)
+    li   $v0, 2             # Syscall para print_float
+    syscall
+    
+    # Imprime Quebra de Linha
+    la   $a0, msg_end       
+    li   $v0, 4
+    syscall
+
+    lw   $ra, 0($sp)
+    addi $sp, $sp, 4
+    jr   $ra
+
+# save_poi_matrix: Salva 1 na POI_Matriz na posição (i, j).
+# Usa $s0 (i), $s1 (j).
+save_poi_matrix:
+    addi $sp, $sp, -4
+    sw   $ra, 0($sp)
+    
+    lw   $t0, DIMENSAO      
+    mul  $t0, $s0, $t0      
+    add  $t0, $t0, $s1      # Offset (i*N + j)
+    la   $t1, POI_Matriz    
+    add  $t1, $t1, $t0      # Endereço POI[i][j]
+    
+    li   $t2, 1             
+    sb   $t2, 0($t1)        # Salva 1
+
+    lw   $ra, 0($sp)
+    addi $sp, $sp, 4
+    jr   $ra
+
+# save_score_matrix: Salva a pontuação (word) em Score_Matriz na posição (i,j)
+save_score_matrix:
+    addi $sp, $sp, -4
+    sw   $ra, 0($sp)
+
+    lw   $t0, DIMENSAO
+    mul  $t0, $s0, $t0
+    add  $t0, $t0, $s1      # Offset (i*N + j)
+    sll  $t0, $t0, 2        # offset em bytes
+    la   $t1, Score_Matriz
+    add  $t1, $t1, $t0      # Endereço Score_Matriz[i][j]
+
+    move $t2, $t5           # t5 contem a pontuação (score)
+    sw   $t2, 0($t1)        # Salva score como word
+
+    lw   $ra, 0($sp)
+    addi $sp, $sp, 4
+    jr   $ra
+
+# convert_matrix_to_buffer: Converte a matriz binária (bytes) para string ASCII (char) no buffer.
+convert_matrix_to_buffer:
+    addi $sp, $sp, -4
+    sw   $ra, 0($sp)
+
+    lw   $s0, DIMENSAO      # N (128)
+    mul  $s1, $s0, $s0      # N*N (16384)
+    li   $s2, 0             # Contador de células
+    li   $s3, 0             # Contador de buffer (offset)
+    la   $s4, POI_Matriz    # Base POI_Matriz (byte por célula)
+    la   $s5, output_buffer # Base Output Buffer
+    li   $t0, 10            # Valor ASCII de '\n'
+    li   $t1, 32            # Valor ASCII de ' '
+
+loop_convert:
+    bge  $s2, $s1, end_convert
+    
+    # Adiciona quebra de linha a cada N colunas
+    div  $t2, $s2, $s0      
+    mul  $t3, $t2, $s0
+    beq  $s2, $t3, add_newline # Se s2 % N == 0
+
+    # Adiciona espaço (32)
+    sb   $t1, 0($s5)
+    addi $s5, $s5, 1
+    
+add_char:
+    # Carrega valor da POI_Matriz (byte)
+    lb   $t2, 0($s4)
+    addi $s4, $s4, 1        # Próxima célula (1 byte)
+
+    # Converte (0 ou 1) para ASCII ('0' ou '1')
+    addi $t2, $t2, 48
+    sb   $t2, 0($s5)
+    addi $s5, $s5, 1        # Próximo buffer
+
+    addi $s2, $s2, 1        # Contador de células++
+    j    loop_convert
+
+add_newline:
+    # Adiciona quebra de linha (10)
+    bne  $s2, 0, save_nl    # Não adiciona \n no começo
+    j    add_char
+
+save_nl:
+    sb   $t0, 0($s5)        # Salva '\n'
+    addi $s5, $s5, 1
+    j    add_char
+
+end_convert:
+    lw   $ra, 0($sp)
+    addi $sp, $sp, 4
+    jr   $ra
+
+# save_matrix_to_file: Abre o arquivo de saída e escreve o output_buffer.
+save_matrix_to_file:
+    addi $sp, $sp, -4
+    sw   $ra, 0($sp)
+    
+    # Abre arquivo (syscall 13)
+    li   $v0, 13
+    la   $a0, output_filename
+    li   $a1, 1             
+    li   $a2, 0
+    syscall
+    move $s6, $v0          
+    blt  $s6, 0, file_err   # Erro
+
+    # Escreve buffer (syscall 15)
+    li   $v0, 15
+    move $a0, $s6           # FD
+    la   $a1, output_buffer
+    lw   $a2, OUTPUT_BUFFER_SIZE
+    syscall
+
+    # Fecha arquivo (syscall 16)
+    li   $v0, 16
+    move $a0, $s6
+    syscall
+
+    j    file_ret
+
+file_err:
+    j    erro_output_file
+    
+file_ret:
+    lw   $ra, 0($sp)
+    addi $sp, $sp, 4
+    jr   $ra

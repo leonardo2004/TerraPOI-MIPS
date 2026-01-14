@@ -1,0 +1,120 @@
+# parser.mar
+# Rotina para ler o buffer de texto e preencher MDE_Matriz (float).
+
+.text
+.globl parse_mde
+.globl init_poi_matrix
+
+# init_poi_matrix: Preenche POI_Matriz (128x128 bytes) com zeros.
+init_poi_matrix:
+    addi $sp, $sp, -4
+    sw   $ra, 0($sp)
+    
+    la   $t0, POI_Matriz    
+    lw   $t1, DIMENSAO      
+    mul  $t1, $t1, $t1      
+    li   $t2, 0             
+
+loop_init:
+    bge  $t2, $t1, end_init
+    sb   $zero, 0($t0)      
+    addi $t0, $t0, 1       
+    addi $t2, $t2, 1        
+    j    loop_init
+
+end_init:
+    lw   $ra, 0($sp)
+    addi $sp, $sp, 4
+    jr   $ra
+
+# parse_mde: Converte o buffer de caracteres ASCII para floats na MDE_Matriz.
+parse_mde:
+    addi $sp, $sp, -4
+    sw   $ra, 0($sp)
+    
+    la   $t0, buffer        
+    la   $t1, MDE_Matriz    
+    li   $t2, 0             
+    li   $t3, 10            
+    li   $t4, 0             
+    li   $t5, 0             
+    li   $t6, 0            
+    li   $t7, 0             
+    li   $t9, 0             
+
+loop_p:
+    lb   $a0, 0($t0)        
+    beq  $a0, $zero, end_p  
+
+    addi $t0, $t0, 1        
+
+    # Caractere: '0'-'9' (48-57)
+    blt  $a0, 48, p_non_digit
+    bgt  $a0, 57, p_non_digit
+    
+    li   $t9, 1             
+    sub  $a0, $a0, 48       
+    
+    # Se achou '.', trata como decimal
+    bne  $t5, 0, p_decimal
+
+    mul  $t2, $t2, $t3     
+    add  $t2, $t2, $a0      
+    j    loop_p
+
+p_decimal:
+    mul  $t6, $t6, $t3      
+    add  $t4, $t4, $a0      
+    j    loop_p
+
+p_non_digit:
+    # Se não é dígito, checa se é separador de número ( '.' ou ',' )
+    beq  $a0, 46, p_dot     
+    beq  $a0, 44, p_dot     
+    
+    # Se não é dígito ou ponto/vírgula, e havia número em progresso (t9=1)
+    beq  $t9, 0, loop_p     
+
+    # Finaliza número
+    li   $t9, 0             
+    li   $t5, 0             
+
+    # 1. Carrega parte inteira ($f1)
+    mtc1 $t2, $f1           
+    cvt.s.w $f1, $f1        
+    li   $t2, 0            
+
+    # 2. Carrega parte decimal ($f2) e divide
+    mtc1 $t4, $f2           
+    cvt.s.w $f2, $f2        
+    mtc1 $t6, $f3           
+    cvt.s.w $f3, $f3        
+    div.s $f2, $f2, $f3     
+    li   $t4, 0            
+    li   $t6, 1             
+
+    # 3. Soma e Salva float
+    add.s $f0, $f1, $f2     
+    sll  $t8, $t7, 2       
+    add  $t8, $t8, $t1     
+    s.s  $f0, 0($t8)        
+    
+    addi $t7, $t7, 1        
+    j    loop_p
+
+p_dot:
+    li   $t5, 1             
+    li   $t6, 10            
+    j    loop_p
+
+end_p:
+    # Salva o último número se houver número em progresso
+    beq  $t9, 0, p_ret
+    add.s $f0, $f1, $f2
+    s.s   $f0, 0($t1)
+    j    p_ret
+    
+p_ret:
+    lw   $ra, 0($sp)
+    addi $sp, $sp, 4
+    jr   $ra

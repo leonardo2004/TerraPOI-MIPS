@@ -1,0 +1,91 @@
+# spatial_filter.mar
+# Rotina para remover POIs isolados usando filtro 3x3.
+
+.text
+.globl remove_small_regions
+
+# remove_small_regions: Aplica um filtro de densidade 3x3 na POI_Matriz.
+# Pontos com soma de vizinhos < MIN_NEIGHBOR_COUNT são desclassificados (0).
+remove_small_regions:
+    addi $sp, $sp, -4
+    sw   $ra, 0($sp)
+    
+    lw   $s2, DIMENSAO      # N (128)
+    la   $t9, POI_Matriz    # Base POI Matriz
+    lw   $t6, MIN_NEIGHBOR_COUNT # Limiar Mínimo
+
+    li   $s0, 1             # i (linha)
+    addi $s3, $s2, -1       # Limite N-1 (127)
+    
+loop_filter_i:
+    bge  $s0, $s3, end_filter
+    li   $s1, 1             # j (coluna)
+    
+loop_filter_j:
+    bge  $s1, $s3, next_filter_i
+    
+    # Endereço POI[i][j]
+    mul  $t0, $s0, $s2      
+    add  $t0, $t0, $s1      
+    add  $t8, $t9, $t0      
+    
+    # Se não é POI (0), pular
+    lb   $t7, 0($t8)        
+    beq  $t7, $zero, next_filter_j 
+
+    # Loop de vizinhança 3x3
+    li   $t5, 0             # Neighbor Count (sum_3x3)
+    li   $t2, -1            # di (-1 a 1)
+loop_di:
+    bgt  $t2, 1, check_threshold_spatial
+    li   $t3, -1            # dj (-1 a 1)
+loop_dj:
+    bgt  $t3, 1, next_di
+    
+    # i_vizinho = i + di, j_vizinho = j + dj
+    add  $t1, $s0, $t2      
+    add  $t4, $s1, $t3      
+    
+    # Checagem de Limites (0 <= i/j_vizinho < N)
+    blt  $t1, $zero, next_dj 
+    bge  $t1, $s2, next_dj   
+    blt  $t4, $zero, next_dj 
+    bge  $t4, $s2, next_dj   
+    
+    # Cálculo de endereço e carregamento
+    mul  $t1, $t1, $s2      
+    add  $t1, $t1, $t4      
+    add  $t1, $t9, $t1      
+    
+    lb   $t7, 0($t1)        
+    add  $t5, $t5, $t7      # Soma o vizinho (0 ou 1)
+    
+    next_dj:
+    addi $t3, $t3, 1
+    j    loop_dj
+    
+next_di:
+    addi $t2, $t2, 1
+    j    loop_di
+    
+check_threshold_spatial:
+    # Desclassifica se a soma 3x3 ($t5) for menor que o limiar ($t6)
+    blt  $t5, $t6, disqualify_poi_spatial
+    
+    j    next_filter_j
+    
+disqualify_poi_spatial:
+    sb   $zero, 0($t8)      # Salva 0 no POI[i][j]
+    
+next_filter_j:
+    addi $s1, $s1, 1        # j++
+    j    loop_filter_j
+    
+next_filter_i:
+    addi $s0, $s0, 1        # i++
+    j    loop_filter_i
+
+end_filter:
+    lw   $ra, 0($sp)
+    addi $sp, $sp, 4
+    jr   $ra
