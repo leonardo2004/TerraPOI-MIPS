@@ -10,7 +10,11 @@ from tqdm import tqdm
 # --- CONFIGURAÇÃO INICIAL ---
 # BBOX: Área de interesse (Min Lon, Min Lat, Max Lon, Max Lat)
 BBOX = (-47.0, -22.4, -46.8, -22.2)
-ARQUIVO_MDE_LOCAL = "mde_baixado.tif"
+# Raiz do repositorio (este arquivo fica em python/) e pasta de saida da regiao personalizada
+RAIZ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PASTA_SAIDA = os.path.join(RAIZ, "data", "input_maps", "regiao_personalizada")
+ARQUIVO_MDE_LOCAL = os.path.join(PASTA_SAIDA, "mde_baixado.tif")
+ARQUIVO_MATRIZ_TXT = os.path.join(PASTA_SAIDA, "mde.txt")  # lido pelo MARS (regiao 5)
 # Dimensão fixa da matriz de saída, crucial para processamento em Assembly (MARS)
 MATRIX_DIMENSION = 128 
 
@@ -135,6 +139,7 @@ def exportar_txt(matriz, nome):
 # --- EXECUÇÃO PRINCIPAL ---
 if __name__ == "__main__":
     print("=== INICIANDO SISTEMA DE AQUISIÇÃO E CONSTRUÇÃO DE MATRIZ ===")
+    os.makedirs(PASTA_SAIDA, exist_ok=True)
     
     # 1. Download
     downloader = CopernicusDownloader(BBOX)
@@ -154,6 +159,6 @@ if __name__ == "__main__":
         mde_final = simulated_data + 800
 
     # 3. Exportação
-    exportar_txt(mde_final, "matriz_elevacao.txt")
+    exportar_txt(mde_final, ARQUIVO_MATRIZ_TXT)
     
     print("\n✅ Concluído. Matriz de elevação pura exportada na dimensão fixa.")

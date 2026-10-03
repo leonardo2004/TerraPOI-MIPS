@@ -9,8 +9,24 @@
 
 .data
     # Configs de I/O
-    filename:       .asciiz "mde.txt"      
-    output_filename:.asciiz "poi_output.txt" 
+    # Caminhos de E/S relativos a RAIZ do repositorio (execute o MARS a partir dela).
+    # Regioes 1-4: dados do projeto; 5: matriz gerada por python/MDE_downloader.py
+    in_path_1:      .asciiz "data/input_maps/regiao_1_vale_paraiba/mde.txt"
+    in_path_2:      .asciiz "data/input_maps/regiao_2_sao_paulo/mde.txt"
+    in_path_3:      .asciiz "data/input_maps/regiao_3_campos_do_jordao/mde.txt"
+    in_path_4:      .asciiz "data/input_maps/regiao_4/mde.txt"
+    in_path_5:      .asciiz "data/input_maps/regiao_personalizada/mde.txt"
+    out_path_1:     .asciiz "data/generated/regiao_1_vale_paraiba/poi_output.txt"
+    out_path_2:     .asciiz "data/generated/regiao_2_sao_paulo/poi_output.txt"
+    out_path_3:     .asciiz "data/generated/regiao_3_campos_do_jordao/poi_output.txt"
+    out_path_4:     .asciiz "data/generated/regiao_4/poi_output.txt"
+    out_path_5:     .asciiz "data/generated/regiao_personalizada/poi_output.txt"
+    .align 2
+    input_paths:    .word in_path_1, in_path_2, in_path_3, in_path_4, in_path_5
+    output_paths:   .word out_path_1, out_path_2, out_path_3, out_path_4, out_path_5
+    # Ponteiros para os caminhos da regiao escolhida (preenchidos em main)
+    filename:       .word 0
+    output_filename:.word 0
     buffer:         .space  300000         
     
     # Matrizes
@@ -74,6 +90,8 @@
     msg_col:        .asciiz " C:"
     msg_pts:        .asciiz " Pts:"
     msg_end:        .asciiz "\n"
+    msg_ask_region: .asciiz "Escolha a regiao (1=Vale do Paraiba, 2=Sao Paulo, 3=Campos do Jordao, 4=Regiao 4, 5=Personalizada): "
+    msg_reading:    .asciiz "Lendo: "
     msg_ok:         .asciiz "Processando MDE...\n"
     msg_ask_hemisphere: .asciiz "Escolha hemisferio (0=Norte,1=Sul,2=Equador): "
     msg_hemi_ok:    .asciiz "Hemisferio registrado.\n"
@@ -90,9 +108,46 @@
 main:
     li   $sp, 0x7ffffffc 
 
+    # 0. Selecao da regiao (define os caminhos de entrada e de saida)
+    la   $a0, msg_ask_region
+    li   $v0, 4
+    syscall
+    li   $v0, 5
+    syscall
+    move $t0, $v0
+    blt  $t0, 1, region_default   # valor invalido (< 1) -> regiao 1
+    bgt  $t0, 5, region_default   # valor invalido (> 5) -> regiao 1
+    j    region_set
+region_default:
+    li   $t0, 1
+region_set:
+    addi $t0, $t0, -1             # indice 0..4
+    sll  $t0, $t0, 2              # deslocamento em bytes (ponteiros de 4 bytes)
+    la   $t1, input_paths
+    add  $t1, $t1, $t0
+    lw   $t2, 0($t1)              # endereco do caminho de entrada
+    la   $t3, filename
+    sw   $t2, 0($t3)
+    la   $t1, output_paths
+    add  $t1, $t1, $t0
+    lw   $t2, 0($t1)              # endereco do caminho de saida
+    la   $t3, output_filename
+    sw   $t2, 0($t3)
+
+    # Informa o arquivo que sera lido
+    la   $a0, msg_reading
+    li   $v0, 4
+    syscall
+    lw   $a0, filename
+    li   $v0, 4
+    syscall
+    la   $a0, msg_end
+    li   $v0, 4
+    syscall
+
     # 1. Carregamento de Arquivo
     li   $v0, 13
-    la   $a0, filename
+    lw   $a0, filename            # ponteiro p/ caminho da regiao escolhida
     li   $a1, 0
     syscall
     move $s6, $v0       
