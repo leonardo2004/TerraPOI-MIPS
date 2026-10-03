@@ -176,7 +176,7 @@ save_matrix_to_file:
     
     # Abre arquivo (syscall 13)
     li   $v0, 13
-    la   $a0, output_filename
+    lw   $a0, output_filename   # ponteiro p/ caminho de saida da regiao escolhida
     li   $a1, 1             
     li   $a2, 0
     syscall
